@@ -554,8 +554,8 @@ with mcol2:
                         </div>
                         <div style="color:{TEXT_MUTED}; font-size:0.85rem; margin-top:5px">
                             Holding: {details['amount']:.6f} {cur}<br>
-                            Buy Price: ${details['entry_price']:.2f} | Peak: ${peak_price:.2f}<br>
-                            Current Stop: ${trailing_stop_price:.2f} | Current: ${cur_price:.2f}
+                            Buy Price: ${details['entry_price']:.4f} | Peak: ${peak_price:.4f}<br>
+                            Current Stop: ${trailing_stop_price:.4f} | Current: ${cur_price:.4f}
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
@@ -616,7 +616,7 @@ with tab_trades:
             st.markdown(f"""
                 <div class="trade-row {'buy' if t['side'] == 'BUY' else 'sell'}">
                     <div>
-                        {side_tag} <strong>{t['symbol']}</strong> • {t['amount']:.5f} units @ ${t['price']:.2f}
+                        {side_tag} <strong>{t['symbol']}</strong> • {t['amount']:.5f} units @ ${t['price']:.4f}
                     </div>
                     <div style="font-size:0.9rem; text-align:right;">
                         <span style="color:{TEXT_MUTED}">{time_formatted}</span>
