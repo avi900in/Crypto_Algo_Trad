@@ -10,7 +10,7 @@ import database
 from strategy import BreakoutStrategy
 
 # Constants
-FEE_RATE = 0.00075  # 0.075% exchange fee
+FEE_RATE = 0.00000  # no exchange fee
 PID_FILE = os.path.join(database.DB_DIR, "data", "bot.pid")
 LOG_FILE = os.path.join(database.DB_DIR, "data", "bot.log")
 
