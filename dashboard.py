@@ -277,7 +277,7 @@ if new_symbols_str != configs.get("symbols"):
 # Main Interface Layout
 st.markdown(f"""
     <div class="header-container">
-        <h1 class="header-title">⚡ ANTIGRAVITY ALGO TRADER (no fees high take profit)</h1>
+        <h1 class="header-title">⚡ ANTIGRAVITY ALGO TRADER (no fees highest return higher trade)</h1>
         <p class="header-subtitle">Agent-based Volumetric Breakout Bot for Crypto.com • Timeframe: {candle_interval} • Mode: {'Paper Trading ($100 virtual)' if dry_run else 'Live Account'}</p>
     </div>
 """, unsafe_allow_html=True)
