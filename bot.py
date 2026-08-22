@@ -6,11 +6,16 @@ import traceback
 from datetime import datetime
 import pandas as pd
 import ccxt
+import dotenv
 import database
+import telegram_notifier
 from strategy import BreakoutStrategy
 
+# Load environment variables
+dotenv.load_dotenv(os.path.join(database.DB_DIR, ".env"), override=True)
+
 # Constants
-FEE_RATE = 0.00075  # 0.075% exchange fee
+FEE_RATE = 0.005  # 0.5% exchange fee (50 bps)
 PID_FILE = os.path.join(database.DB_DIR, "data", "bot.pid")
 LOG_FILE = os.path.join(database.DB_DIR, "data", "bot.log")
 
@@ -38,19 +43,27 @@ def get_exchange(api_key=None, api_secret=None):
     if api_key and api_secret:
         params['apiKey'] = api_key
         params['secret'] = api_secret
-    
     # Initialize Crypto.com Exchange client
     exchange = ccxt.cryptocom(params)
     return exchange
 
-def fetch_ohlcv_safely(exchange, symbol, timeframe='5m', limit=50):
+def get_exchange_public(api_key=None,api_secret_public=None):
+    params_public = {'enableRateLimit': True}
+    if api_key:
+        params_public['apiKey'] = api_key
+        params_public['secret'] = api_secret_public
+    # Initialize Crypto.com Exchange client
+    exchange_public = ccxt.cryptocom(params_public)
+    return exchange_public
+
+def fetch_ohlcv_safely(exchange_public, symbol, timeframe='5m', limit=50):
     try:
         # Load markets if not loaded
-        if not exchange.markets:
-            exchange.load_markets()
+        if not exchange_public.markets:
+            exchange_public.load_markets()
         
         # CCXT fetches OHLCV: [[timestamp, open, high, low, close, volume], ...]
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        ohlcv = exchange_public.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
@@ -58,7 +71,7 @@ def fetch_ohlcv_safely(exchange, symbol, timeframe='5m', limit=50):
         log(f"Error fetching OHLCV for {symbol}: {e}")
         return None
 
-def execute_paper_buy(symbol, current_price, trade_size_usd):
+def execute_paper_buy(symbol, current_price, trade_size_usd, reason=""):
     # Treat USD and USDT quote currencies as interchangeable paper balances mapped to "USDT"
     stable_currency = "USDT"
     stable_balance = database.get_paper_balance(stable_currency)
@@ -91,12 +104,24 @@ def execute_paper_buy(symbol, current_price, trade_size_usd):
         pnl=None,
         status="COMPLETED",
         type="PAPER",
-        notes="Simulated breakout buy order"
+        notes=f"Simulated breakout buy order: {reason}"
     )
     log(f"Paper BUY COMPLETED: Bought {amount:.6f} {currency} at ${current_price:.2f} for ${trade_size_usd:.2f} (Fee: ${fee:.4f})")
+    
+    # Send Telegram notification
+    telegram_notifier.notify_trade(
+        side="BUY",
+        symbol=symbol,
+        price=current_price,
+        amount=amount,
+        cost=cost,
+        fee=fee,
+        reason=reason,
+        trade_type="PAPER"
+    )
     return True
 
-def execute_paper_sell(symbol, current_price, amount, entry_price):
+def execute_paper_sell(symbol, current_price, amount, entry_price, reason=""):
     currency = symbol.split('/')[0]
     
     # Calculate total value and fee
@@ -130,12 +155,26 @@ def execute_paper_sell(symbol, current_price, amount, entry_price):
         pnl=pnl,
         status="COMPLETED",
         type="PAPER",
-        notes=f"Simulated exit from entry ${entry_price:.2f}"
+        notes=f"Simulated exit from entry ${entry_price:.2f}: {reason}"
     )
     log(f"Paper SELL COMPLETED: Sold {amount:.6f} {currency} at ${current_price:.2f} for ${net_value:.2f} (Fee: ${fee:.4f}, PnL: ${pnl:+.4f})")
+    
+    # Send Telegram notification
+    telegram_notifier.notify_trade(
+        side="SELL",
+        symbol=symbol,
+        price=current_price,
+        amount=amount,
+        cost=gross_value,
+        fee=fee,
+        pnl=pnl,
+        entry_price=entry_price,
+        reason=reason,
+        trade_type="PAPER"
+    )
     return True
 
-def execute_live_buy(exchange, symbol, current_price, trade_size_usd):
+def execute_live_buy(exchange, symbol, current_price, trade_size_usd, reason=""):
     try:
         # Load markets to check limits
         exchange.load_markets()
@@ -158,14 +197,15 @@ def execute_live_buy(exchange, symbol, current_price, trade_size_usd):
         # Place market order
         order = exchange.create_market_buy_order(symbol, amount)
         
-        # Parse result
-        order_price = order.get('price', current_price)
-        order_amount = order.get('filled', amount)
-        order_cost = order.get('cost', order_price * order_amount)
+        # Parse result safely with fallbacks if exchange returns None values
+        order_price = order.get('price') or current_price
+        order_amount = order.get('filled') or order.get('amount') or amount
+        order_cost = order.get('cost') or (float(order_price) * float(order_amount))
+
         order_fee = 0.0
-        if order.get('fee'):
-            order_fee = order['fee'].get('cost', 0.0)
-            
+        if order.get('fee') and order['fee'].get('cost') is not None:
+            order_fee = float(order['fee']['cost'])
+
         database.add_trade(
             timestamp=datetime.now().isoformat(),
             symbol=symbol,
@@ -177,36 +217,88 @@ def execute_live_buy(exchange, symbol, current_price, trade_size_usd):
             pnl=None,
             status="COMPLETED",
             type="LIVE",
-            notes=f"Live Exchange Order ID: {order.get('id')}"
+            notes=f"Live Exchange Order ID: {order.get('id')} | Reason: {reason}"
         )
         log(f"Live BUY COMPLETED: Bought {order_amount:.6f} at ${order_price:.2f} (Total: ${order_cost:.2f})")
+        
+        # Send Telegram notification
+        tg_ok = telegram_notifier.notify_trade(
+            side="BUY",
+            symbol=symbol,
+            price=float(order_price),
+            amount=float(order_amount),
+            cost=float(order_cost),
+            fee=float(order_fee),
+            reason=reason,
+            trade_type="LIVE",
+            order_id=str(order.get('id', ''))
+        )
+        if tg_ok:
+            log(f"Telegram alert sent successfully for LIVE BUY {symbol}")
+        else:
+            log(f"Telegram alert not sent (check credentials or connection) for LIVE BUY {symbol}")
         return True
     except Exception as e:
         log(f"Live Buy FAILED: {e}")
         traceback.print_exc()
         return False
 
-def execute_live_sell(exchange, symbol, current_price, amount, entry_price):
+def execute_live_sell(exchange, symbol, current_price, amount, entry_price, reason=""):
     try:
         exchange.load_markets()
+        market = exchange.market(symbol)
+        currency = symbol.split('/')[0]
         
-        # Adjust amount to precision
-        amount = float(exchange.amount_to_precision(symbol, amount))
+        # 1. Fetch real-time available wallet balance on the exchange
+        balance = exchange.fetch_balance()
+        free_balance = float(balance.get('free', {}).get(currency, 0.0) or 0.0)
         
-        log(f"Placing Live Market SELL Order for {symbol}: {amount} units...")
+        if free_balance <= 0.0:
+            log(f"Live Sell FAILED: No available {currency} balance found in wallet (Free: {free_balance:.8f})")
+            return False
+            
+        # 2. Cap sell amount to actual available wallet balance (accounts for fees deducted on buy)
+        sell_amount = min(float(amount), free_balance)
         
-        order = exchange.create_market_sell_order(symbol, amount)
+        # 3. Floor down to exchange precision step size so we NEVER round up above available balance
+        prec = market.get('precision', {}).get('amount')
+        if prec is not None:
+            import math
+            if isinstance(prec, float) and prec < 1:
+                decimals = abs(int(round(math.log10(prec))))
+                sell_amount = round(math.floor(sell_amount / prec) * prec, decimals)
+            elif isinstance(prec, int):
+                sell_amount = round(math.floor(sell_amount * (10 ** prec)) / (10 ** prec), prec)
+                
+        amount_str = exchange.amount_to_precision(symbol, sell_amount)
+        final_amount = float(amount_str)
         
-        order_price = order.get('price', current_price)
-        order_amount = order.get('filled', amount)
-        order_cost = order.get('cost', order_price * order_amount)
+        # Safety guarantee: never exceed free wallet balance
+        if final_amount > free_balance:
+            final_amount = sell_amount
+            
+        # Check against minimum order limits
+        min_amount = market.get('limits', {}).get('amount', {}).get('min')
+        if min_amount and final_amount < min_amount:
+            log(f"Live Sell FAILED: Order size {final_amount} is below exchange minimum {min_amount} for {symbol}")
+            return False
+        
+        log(f"Placing Live Market SELL Order for {symbol}: {final_amount} units (Wallet free: {free_balance:.6f} {currency})...")
+        
+        order = exchange.create_market_sell_order(symbol, final_amount)
+        
+        # Parse result safely with fallbacks if exchange returns None values
+        order_price = order.get('price') or current_price
+        order_amount = order.get('filled') or order.get('amount') or amount
+        order_cost = order.get('cost') or (float(order_price) * float(order_amount))
+        
         order_fee = 0.0
-        if order.get('fee'):
-            order_fee = order['fee'].get('cost', 0.0)
+        if order.get('fee') and order['fee'].get('cost') is not None:
+            order_fee = float(order['fee']['cost'])
             
         # PnL calculation
-        buy_cost = order_amount * entry_price
-        pnl = (order_cost - order_fee) - buy_cost
+        buy_cost = float(order_amount) * float(entry_price)
+        pnl = (float(order_cost) - float(order_fee)) - buy_cost
         
         database.add_trade(
             timestamp=datetime.now().isoformat(),
@@ -219,16 +311,35 @@ def execute_live_sell(exchange, symbol, current_price, amount, entry_price):
             pnl=pnl,
             status="COMPLETED",
             type="LIVE",
-            notes=f"Live Exchange Order ID: {order.get('id')}"
+            notes=f"Live Exchange Order ID: {order.get('id')} | Reason: {reason}"
         )
         log(f"Live SELL COMPLETED: Sold {order_amount:.6f} at ${order_price:.2f} (PnL: ${pnl:+.4f})")
+        
+        # Send Telegram notification
+        tg_ok = telegram_notifier.notify_trade(
+            side="SELL",
+            symbol=symbol,
+            price=float(order_price),
+            amount=float(order_amount),
+            cost=float(order_cost),
+            fee=float(order_fee),
+            pnl=float(pnl),
+            entry_price=float(entry_price),
+            reason=reason,
+            trade_type="LIVE",
+            order_id=str(order.get('id', ''))
+        )
+        if tg_ok:
+            log(f"Telegram alert sent successfully for LIVE SELL {symbol}")
+        else:
+            log(f"Telegram alert not sent (check credentials or connection) for LIVE SELL {symbol}")
         return True
     except Exception as e:
         log(f"Live Sell FAILED: {e}")
         traceback.print_exc()
         return False
 
-def update_performance_snapshot(exchange, dry_run, target_symbols):
+def update_performance_snapshot(exchange,exchange_public,dry_run, target_symbols):
     try:
         timestamp_str = datetime.now().strftime("%Y-%m-%d %H:00:00") # Hourly snapshot
         
@@ -257,15 +368,16 @@ def update_performance_snapshot(exchange, dry_run, target_symbols):
             
         else:
             # Live trading equity calculation
+
             balance = exchange.fetch_balance()
-            total_equity = balance.get('total', {}).get('USDT', 0.0)
+            total_equity = balance.get('total', {}).get('USD', 0.0)
             
             # Fetch prices of holding coins and sum up
             for currency, amount in balance.get('total', {}).items():
                 if currency != 'USDT' and amount > 0.0:
                     symbol = next((s for s in target_symbols if s.startswith(f"{currency}/")), f"{currency}/USDT")
                     try:
-                        ticker = exchange.fetch_ticker(symbol)
+                        ticker = exchange_public.fetch_ticker(symbol)
                         total_equity += amount * ticker['last']
                     except Exception:
                         pass
@@ -279,7 +391,7 @@ def update_performance_snapshot(exchange, dry_run, target_symbols):
     except Exception as e:
         log(f"Error logging performance snapshot: {e}")
 
-def run_bot_cycle(exchange, strategy):
+def run_bot_cycle(exchange,exchange_public,strategy):
     # 1. Fetch live configs from DB
     configs = database.get_all_configs()
     
@@ -304,39 +416,31 @@ def run_bot_cycle(exchange, strategy):
     if dry_run:
         open_positions = database.get_open_paper_positions()
     else:
-        # For live trading, we fetch from DB trades log to find active positions we purchased
-        # (This is more reliable than wallet balances because the user might have other assets on the exchange)
+        # For live trading, we query the latest trade for each specific symbol
         open_positions = {}
         for s in symbols:
             currency = s.split('/')[0]
-            # Query last completed trade for this symbol
-            trades = database.get_trades(limit=1, trade_type="LIVE")
-            if trades and trades[0]['symbol'] == s and trades[0]['side'] == 'BUY' and trades[0]['status'] == 'COMPLETED':
-                # Check if we sold it
-                # Find if there is a newer SELL trade
-                conn = database.get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                SELECT side FROM trades 
-                WHERE symbol = ? AND status = 'COMPLETED' AND type = 'LIVE' 
-                ORDER BY timestamp DESC LIMIT 1
-                """, (s,))
-                row = cursor.fetchone()
-                conn.close()
-                if row and row['side'] == 'BUY':
-                    # We are holding it!
-                    # For simplicity, we query the details of that BUY
-                    open_positions[currency] = {
-                        "amount": trades[0]['amount'],
-                        "entry_price": trades[0]['price']
-                    }
+            conn = database.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+            SELECT side, amount, price FROM trades 
+            WHERE symbol = ? AND status = 'COMPLETED' AND type = 'LIVE' 
+            ORDER BY timestamp DESC LIMIT 1
+            """, (s,))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row['side'] == 'BUY':
+                open_positions[currency] = {
+                    "amount": float(row['amount']),
+                    "entry_price": float(row['price'])
+                }
 
     # Analyze each symbol
     for symbol in symbols:
         currency = symbol.split('/')[0]
         
         # Fetch historical prices
-        df = fetch_ohlcv_safely(exchange, symbol, timeframe, limit=50)
+        df = fetch_ohlcv_safely(exchange_public, symbol, timeframe, limit=50)
         if df is None or len(df) < 25:
             log(f"Skipping {symbol} due to insufficient candle data.")
             continue
@@ -366,7 +470,8 @@ def run_bot_cycle(exchange, strategy):
             entry_price=entry_price,
             peak_price=peak_price,
             stop_loss_pct=stop_loss_pct,
-            take_profit_pct=take_profit_pct
+            take_profit_pct=take_profit_pct,
+            fee_rate=FEE_RATE
         )
 
         signal_type = analysis['signal']
@@ -378,18 +483,18 @@ def run_bot_cycle(exchange, strategy):
         # Execute signals
         if signal_type == "BUY" and not is_holding:
             if dry_run:
-                execute_paper_buy(symbol, current_price, trade_size_usd)
+                execute_paper_buy(symbol, current_price, trade_size_usd, reason=reason)
             else:
-                execute_live_buy(exchange, symbol, current_price, trade_size_usd)
+                execute_live_buy(exchange, symbol, current_price, trade_size_usd, reason=reason)
                 
         elif signal_type == "SELL" and is_holding:
             if dry_run:
-                execute_paper_sell(symbol, current_price, amount_held, entry_price)
+                execute_paper_sell(symbol, current_price, amount_held, entry_price, reason=reason)
             else:
-                execute_live_sell(exchange, symbol, current_price, amount_held, entry_price)
+                execute_live_sell(exchange, symbol, current_price, amount_held, entry_price, reason=reason)
 
     # 4. Log portfolio snapshot
-    update_performance_snapshot(exchange, dry_run, symbols)
+    update_performance_snapshot(exchange, exchange_public, dry_run, symbols)
 
 def main():
     global running
@@ -426,15 +531,17 @@ def main():
     # Load keys
     api_key = os.getenv("CRYPTOCOM_API_KEY")
     api_secret = os.getenv("CRYPTOCOM_API_SECRET")
+    api_secret_public=''
     
     exchange = get_exchange(api_key, api_secret)
+    exchange_public = get_exchange_public(api_key,api_secret_public)
     strategy = BreakoutStrategy()
 
     # Loop
     try:
         while running:
             # Run one cycle
-            run_bot_cycle(exchange, strategy)
+            run_bot_cycle(exchange,exchange_public,strategy)
             
             # Reload keys/configs dynamically
             configs = database.get_all_configs()

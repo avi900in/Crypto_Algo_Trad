@@ -138,11 +138,23 @@ def get_all_paper_balances():
 def add_trade(timestamp, symbol, side, price, amount, cost, fee, pnl, status, type, notes=""):
     conn = get_db_connection()
     cursor = conn.cursor()
+
     cursor.execute("""
     INSERT INTO trades (timestamp, symbol, side, price, amount, cost, fee, pnl, status, type, notes)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (timestamp, symbol, side, float(price), float(amount), float(cost), float(fee), 
-          float(pnl) if pnl is not None else None, status, type, notes))
+    """, (
+        timestamp,
+        symbol,
+        side,
+        float(price or 0.0),
+        float(amount or 0.0),
+        float(cost or 0.0),
+        float(fee or 0.0),
+        float(pnl) if pnl is not None else None,
+        status,
+        type,
+        notes
+    ))
     conn.commit()
     conn.close()
 

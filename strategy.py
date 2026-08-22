@@ -48,7 +48,7 @@ class BreakoutStrategy:
 
         return df
 
-    def analyze(self, df, open_position=False, entry_price=None, peak_price=None, stop_loss_pct=1.5, take_profit_pct=3.0, fee_rate=0.00075):
+    def analyze(self, df, open_position=False, entry_price=None, peak_price=None, stop_loss_pct=1.5, take_profit_pct=3.0, fee_rate=0.005):
         """
         Analyzes the latest bar and decides on BUY, SELL, or HOLD.
         Incorporates round-trip fees into the exit targets.
@@ -73,7 +73,7 @@ class BreakoutStrategy:
         volume_ratio = current_vol / avg_vol if avg_vol > 0 else 1.0
 
         # Calculate round-trip fee percentage (Buy fee + Sell fee)
-        # e.g., 2 * 0.075% = 0.15%
+        # e.g., 2 * 0.5% = 1.0%
         round_trip_fee_pct = 2 * fee_rate * 100
 
         # Fine-Tuning: Dynamic Exit targets based on ATR (market volatility)
@@ -172,9 +172,9 @@ class BreakoutStrategy:
             price_increasing = current_price > prev['close']
 
             # Tuned Fee Guard: If current volatility (ATR) is so low that the expected Take-Profit
-            # is less than 3x the round-trip fee, we skip the trade to avoid fee drag.
+            # is less than 1.5x the round-trip fee (e.g. < 1.5%), we skip the trade to avoid fee drag.
             expected_gain_pct = take_profit_pct
-            is_volatility_sufficient = expected_gain_pct >= (round_trip_fee_pct * 3)
+            is_volatility_sufficient = expected_gain_pct >= (round_trip_fee_pct * 1.5)
 
             if volume_breakout and bullish_trend and rsi_bullish and price_increasing and is_volatility_sufficient:
                 return {

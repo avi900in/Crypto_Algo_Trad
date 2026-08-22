@@ -12,7 +12,7 @@ import dotenv
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import database
 from strategy import BreakoutStrategy
-from bot import get_exchange, fetch_ohlcv_safely
+from bot import get_exchange,get_exchange_public,fetch_ohlcv_safely
 
 # Setup page
 st.set_page_config(
@@ -151,6 +151,55 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
+# Helper to retrieve dashboard master password from Streamlit secrets, .env, or database
+def get_dashboard_password():
+    try:
+        if hasattr(st, "secrets") and "DASHBOARD_PASSWORD" in st.secrets:
+            return str(st.secrets["DASHBOARD_PASSWORD"]).strip()
+    except Exception:
+        pass
+    env_pass = os.getenv("DASHBOARD_PASSWORD", "").strip()
+    if env_pass:
+        return env_pass
+    try:
+        db_pass = database.get_config("dashboard_password", "")
+        if db_pass:
+            return str(db_pass).strip()
+    except Exception:
+        pass
+    return ""
+
+# Authentication Gate
+configured_password = get_dashboard_password()
+if configured_password:
+    if not st.session_state.get("authenticated", False):
+        _, login_col, _ = st.columns([1, 1.4, 1])
+        with login_col:
+            st.markdown(f"""
+                <div style="background: linear-gradient(135deg, {CARD_BG} 0%, #1c1f2e 100%); 
+                            border: 1px solid rgba(0, 242, 254, 0.3); border-radius: 16px; 
+                            padding: 35px 25px 25px 25px; margin-top: 60px; text-align: center; 
+                            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);">
+                    <div style="font-size: 2.4rem; margin-bottom: 5px;">⚡</div>
+                    <h2 style="background: linear-gradient(90deg, {PRIMARY_COLOR} 0%, {SECONDARY_COLOR} 100%); 
+                               -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+                               margin: 0; font-weight: 800; font-size: 1.6rem;">TERMINAL LOCKED</h2>
+                    <p style="color: {TEXT_MUTED}; font-size: 0.88rem; margin-top: 8px; margin-bottom: 0;">Enter your master password to access the trading terminal.</p>
+                </div>
+            """, unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
+            with st.form("login_form"):
+                entered_password = st.text_input("Master Password", type="password", placeholder="Enter password...", label_visibility="collapsed")
+                submit_login = st.form_submit_button("🔓 Unlock Terminal", use_container_width=True)
+                if submit_login:
+                    if entered_password == configured_password:
+                        st.session_state["authenticated"] = True
+                        st.toast("Access Granted!", icon="🔓")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid master password. Access denied.")
+        st.stop()
+
 # Process Management Helpers
 def get_bot_pid():
     pid_path = os.path.join(database.DB_DIR, "data", "bot.pid")
@@ -242,6 +291,12 @@ else:
             st.toast("Bot stopped successfully.", icon="🛑")
             st.rerun()
 
+if configured_password and st.session_state.get("authenticated", False):
+    st.sidebar.markdown("<div style='margin-top: 8px;'></div>", unsafe_allow_html=True)
+    if st.sidebar.button("🔒 Lock Dashboard", use_container_width=True):
+        st.session_state["authenticated"] = False
+        st.rerun()
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚙️ Quick Configurations")
 
@@ -274,13 +329,49 @@ if new_symbols_str != configs.get("symbols"):
     st.toast("Trading pairs updated!", icon="💱")
     st.rerun()
 
-# Main Interface Layout
-st.markdown(f"""
-    <div class="header-container">
-        <h1 class="header-title">⚡ ANTIGRAVITY ALGO TRADER</h1>
-        <p class="header-subtitle">Agent-based Volumetric Breakout Bot for Crypto.com • Timeframe: {candle_interval} • Mode: {'Paper Trading ($100 virtual)' if dry_run else 'Live Account'}</p>
-    </div>
-""", unsafe_allow_html=True)
+# Main Interface Layout - Header & Top Refresh Toolbar (Equal 50/50 Width)
+top_col1, top_col2 = st.columns(2)
+
+with top_col1:
+    st.markdown(f"""
+        <div class="header-container" style="padding: 12px 18px; margin-bottom: 0px; min-height: 98px; display: flex; flex-direction: column; justify-content: center;">
+            <h1 class="header-title" style="font-size: 1.35rem; margin: 0; line-height: 1.2;">⚡ ANTIGRAVITY ALGO TRADER</h1>
+            <p class="header-subtitle" style="font-size: 0.8rem; margin-top: 4px; margin-bottom: 0; line-height: 1.3;">
+                Volumetric Breakout Bot • Timeframe: <strong>{candle_interval}</strong> • Mode: <span style="color: {'#00E676' if dry_run else '#00F2FE'}; font-weight: 600;">{'Paper Trading' if dry_run else 'Live Account'}</span>
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+with top_col2:
+    st.markdown(f"""
+        <div style="background-color: {CARD_BG}; border: 1px solid rgba(0, 242, 254, 0.15); border-radius: 12px; padding: 12px 18px; margin-bottom: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:0.85rem; color:{TEXT_MUTED}; text-transform:uppercase; letter-spacing:1px; font-weight:700;">🔄 Real-time Sync</span>
+                <span style="font-size:0.8rem; color:{SUCCESS_COLOR}; background:rgba(0,230,118,0.12); padding:3px 8px; border-radius:4px; font-family:monospace;">Updated: {datetime.now().strftime('%H:%M:%S')}</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    rc1, rc2, rc3 = st.columns([1.2, 1.2, 1])
+    with rc1:
+        if st.button("↻ Refresh Now", use_container_width=True):
+            st.rerun()
+    with rc2:
+        auto_refresh = st.toggle("Auto-Sync", value=st.session_state.get("auto_refresh", False), key="auto_refresh_toggle")
+        st.session_state["auto_refresh"] = auto_refresh
+    with rc3:
+        refresh_interval_map = {"5s": 5, "10s": 10, "15s": 15, "30s": 30, "60s": 60, "2m": 120}
+        selected_interval_label = st.selectbox(
+            "Interval",
+            options=list(refresh_interval_map.keys()),
+            index=list(refresh_interval_map.keys()).index(st.session_state.get("refresh_interval_label", "15s")),
+            key="refresh_interval_select",
+            label_visibility="collapsed"
+        )
+        st.session_state["refresh_interval_label"] = selected_interval_label
+        refresh_seconds = refresh_interval_map[selected_interval_label]
+
+st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
 # Fetch stats and trade data
 mode_type = "PAPER" if dry_run else "LIVE"
@@ -294,14 +385,16 @@ if dry_run:
     # Calculate current asset values dynamically using CCXT
     api_key = os.getenv("CRYPTOCOM_API_KEY")
     api_secret = os.getenv("CRYPTOCOM_API_SECRET")
+    api_secret_public=''
     exchange = get_exchange(api_key, api_secret)
+    exchange_public=get_exchange_public(api_key,api_secret_public)
     
     asset_value = 0.0
     open_positions = database.get_open_paper_positions()
     for currency, details in open_positions.items():
         try:
             symbol = details.get('symbol', f"{currency}/USDT")
-            ticker = exchange.fetch_ticker(symbol)
+            ticker = exchange_public.fetch_ticker(symbol)
             asset_value += details['amount'] * ticker['last']
         except Exception:
             # Fallback to entry price if rate limited or network fails
@@ -384,7 +477,7 @@ with col3:
     """, unsafe_allow_html=True)
 
 with col4:
-    active_positions_count = len(database.get_open_paper_positions()) if dry_run else len([k for k, v in trades if k == 'BUY']) # simple proxy
+    active_positions_count = len(database.get_open_paper_positions()) if dry_run else len([t for t in trades if t['side'] == 'BUY']) # simple proxy
     if not dry_run:
         # Count open positions for live
         active_positions_count = 0
@@ -415,9 +508,10 @@ with mcol1:
     # Initialize exchange to fetch chart data
     api_key = os.getenv("CRYPTOCOM_API_KEY")
     api_secret = os.getenv("CRYPTOCOM_API_SECRET")
-    exchange = get_exchange(api_key, api_secret)
+    api_secret_public=''
+    exchange_public = get_exchange_public(api_key, api_secret_public)
     
-    df = fetch_ohlcv_safely(exchange, selected_symbol, timeframe=candle_interval, limit=50)
+    df = fetch_ohlcv_safely(exchange_public, selected_symbol, timeframe=candle_interval, limit=50)
     
     if df is not None and len(df) > 0:
         # Calculate strategy indicators
@@ -554,8 +648,8 @@ with mcol2:
                         </div>
                         <div style="color:{TEXT_MUTED}; font-size:0.85rem; margin-top:5px">
                             Holding: {details['amount']:.6f} {cur}<br>
-                            Buy Price: ${details['entry_price']:.4f} | Peak: ${peak_price:.4f}<br>
-                            Current Stop: ${trailing_stop_price:.4f} | Current: ${cur_price:.4f}
+                            Buy Price: ${details['entry_price']:.2f} | Peak: ${peak_price:.2f}<br>
+                            Current Stop: ${trailing_stop_price:.2f} | Current: ${cur_price:.2f}
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
@@ -600,7 +694,7 @@ with mcol2:
 st.markdown("<br>---<br>", unsafe_allow_html=True)
 
 # Tabs section
-tab_trades, tab_settings, tab_logs = st.tabs(["📜 Execution Logs", "🔑 API Settings", "⚙️ Bot Terminal Output"])
+tab_trades, tab_manual, tab_settings, tab_logs = st.tabs(["📜 Execution Logs", "➕ Manual Trade Entry", "🔑 API Settings", "⚙️ Bot Terminal Output"])
 
 with tab_trades:
     st.markdown("### Historical Orders")
@@ -613,40 +707,165 @@ with tab_trades:
                 pnl_info = f" • <span style='color:{color}; font-weight:bold;'>PnL: {t['pnl']:+.4f} USD</span>"
                 
             time_formatted = datetime.fromisoformat(t['timestamp']).strftime("%m-%d %H:%M:%S")
-            st.markdown(f"""
-                <div class="trade-row {'buy' if t['side'] == 'BUY' else 'sell'}">
-                    <div>
-                        {side_tag} <strong>{t['symbol']}</strong> • {t['amount']:.5f} units @ ${t['price']:.4f}
-                    </div>
-                    <div style="font-size:0.9rem; text-align:right;">
-                        <span style="color:{TEXT_MUTED}">{time_formatted}</span>
-                        {pnl_info}
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+            trade_class = 'buy' if t['side'] == 'BUY' else 'sell'
+            row_html = (
+                f'<div class="trade-row {trade_class}">'
+                f'<div>{side_tag} <strong>{t["symbol"]}</strong> • {t["amount"]:.5f} units @ ${t["price"]:.2f}</div>'
+                f'<div style="font-size:0.9rem; text-align:right;"><span style="color:{TEXT_MUTED}">{time_formatted}</span>{pnl_info}</div>'
+                f'</div>'
+            )
+            st.markdown(row_html, unsafe_allow_html=True)
     else:
         st.markdown(f"<div style='color:{TEXT_MUTED}; font-style:italic;'>No execution logs yet. Launch the bot to start trading.</div>", unsafe_allow_html=True)
 
+with tab_manual:
+    st.markdown("### ➕ Manual Trade Entry")
+    st.caption("Manually insert missing or uncaptured BUY / SELL orders directly into the database.")
+    
+    with st.form("manual_trade_form", clear_on_submit=False):
+        fcol1, fcol2, fcol3 = st.columns(3)
+        with fcol1:
+            form_type = st.selectbox("Trading Mode", options=["LIVE", "PAPER"], index=0 if not dry_run else 1)
+            form_side = st.selectbox("Order Side", options=["BUY", "SELL"])
+        with fcol2:
+            form_symbol = st.text_input("Symbol Pair (e.g. XRP/USDT, ADA/USDT, BTC/USDT)", value="XRP/USDT")
+            form_price = st.number_input("Execution Price ($)", min_value=0.000001, value=1.0, format="%.6f")
+        with fcol3:
+            form_amount = st.number_input("Quantity / Amount", min_value=0.000001, value=10.0, format="%.6f")
+            form_fee = st.number_input("Trading Fee ($)", min_value=0.0, value=0.0, format="%.4f")
+            
+        fcol4, fcol5 = st.columns(2)
+        with fcol4:
+            form_pnl = None
+            if form_side == "SELL":
+                pnl_input = st.number_input("Realized PnL ($)", value=0.0, format="%.4f", help="Net profit/loss on this sale.")
+                form_pnl = pnl_input
+            else:
+                st.info(f"💡 Total Cost: **${(form_price * form_amount):.4f} USD**")
+        with fcol5:
+            form_notes = st.text_input("Notes / Exchange Order ID", value="Manual order entry")
+            
+        submit_trade = st.form_submit_button("💾 Insert Trade Record", use_container_width=True)
+        
+        if submit_trade:
+            if not form_symbol:
+                st.error("Please enter a valid symbol pair.")
+            else:
+                total_cost = form_price * form_amount
+                database.add_trade(
+                    timestamp=datetime.now().isoformat(),
+                    symbol=form_symbol.upper().strip(),
+                    side=form_side,
+                    price=form_price,
+                    amount=form_amount,
+                    cost=total_cost,
+                    fee=form_fee,
+                    pnl=form_pnl,
+                    status="COMPLETED",
+                    type=form_type,
+                    notes=form_notes
+                )
+                if form_type == "PAPER":
+                    currency = form_symbol.upper().strip().split('/')[0]
+                    current_asset = database.get_paper_balance(currency)
+                    current_usdt = database.get_paper_balance("USDT")
+                    if form_side == "BUY":
+                        database.update_paper_balance("USDT", max(0.0, current_usdt - total_cost))
+                        database.update_paper_balance(currency, current_asset + form_amount)
+                    elif form_side == "SELL":
+                        database.update_paper_balance("USDT", current_usdt + (total_cost - form_fee))
+                        database.update_paper_balance(currency, max(0.0, current_asset - form_amount))
+                        
+                import telegram_notifier
+                telegram_notifier.notify_trade(
+                    side=form_side,
+                    symbol=form_symbol.upper().strip(),
+                    price=float(form_price),
+                    amount=float(form_amount),
+                    cost=float(total_cost),
+                    fee=float(form_fee),
+                    pnl=float(form_pnl) if form_pnl is not None else None,
+                    reason=f"Manual Dashboard Entry ({form_notes})",
+                    trade_type=form_type
+                )
+                
+                st.success(f"✅ Successfully added {form_type} {form_side} order for {form_amount} {form_symbol.upper()} @ ${form_price:.4f}!")
+                st.toast("Trade recorded & Telegram alerted!", icon="✅")
+                import time
+                time.sleep(1)
+                st.rerun()
+
 with tab_settings:
     st.markdown("### Crypto.com API Credentials")
-    st.info("💡 Your API keys are saved locally in the `.env` file in the workspace directory. They are never shared or sent to any external server other than CCXT connecting directly to the Crypto.com API endpoints.")
+    st.info("💡 Your API keys and Telegram credentials are saved locally in the `.env` file in the workspace directory. They are never shared with any external third party.")
     
     current_key = os.getenv("CRYPTOCOM_API_KEY", "")
     current_secret = os.getenv("CRYPTOCOM_API_SECRET", "")
+    current_tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    current_tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     
-    api_key_input = st.text_input("Crypto.com API Key", value=current_key, type="password")
-    api_secret_input = st.text_input("Crypto.com API Secret", value=current_secret, type="password")
+    col_k1, col_k2 = st.columns(2)
+    with col_k1:
+        api_key_input = st.text_input("Crypto.com API Key", value=current_key, type="password")
+    with col_k2:
+        api_secret_input = st.text_input("Crypto.com API Secret", value=current_secret, type="password")
+        
+    st.markdown("---")
+    st.markdown("### 🤖 Telegram Bot Notifications (`ID_Crypto_Algo_Trader_bot`)")
+    st.caption("Receive instant alerts with price, quantity, signal reason, and PnL on every live/paper order.")
     
-    if st.button("Save API Credentials"):
-        try:
-            with open(DOTENV_PATH, "w") as f:
-                f.write(f"CRYPTOCOM_API_KEY={api_key_input}\n")
-                f.write(f"CRYPTOCOM_API_SECRET={api_secret_input}\n")
-            st.success("API keys saved successfully!")
-            st.toast("Credentials saved!", icon="🔑")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error saving keys: {e}")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        tg_token_input = st.text_input("Telegram Bot Token (from @BotFather)", value=current_tg_token, type="password", help="Example: 7123456789:AAHfj1... from @BotFather")
+    with col_t2:
+        tg_chat_id_input = st.text_input("Telegram Chat ID", value=current_tg_chat_id, help="Your personal or group Telegram Chat ID (e.g. 123456789 or @userinfobot)")
+        
+    st.markdown("---")
+    st.markdown("### 🛡️ Dashboard Access Password")
+    st.caption("Protect your cloud dashboard with a master password so only you can access it.")
+    
+    current_pass = get_dashboard_password()
+    dash_pass_input = st.text_input("Master Dashboard Password", value=current_pass, type="password", placeholder="Set a master password (leave empty to disable)...")
+    
+    st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
+    
+    btn_col1, btn_col2 = st.columns([1, 1])
+    with btn_col1:
+        if st.button("💾 Save All Credentials & Password", use_container_width=True):
+            try:
+                with open(DOTENV_PATH, "w") as f:
+                    f.write(f"CRYPTOCOM_API_KEY={api_key_input}\n")
+                    f.write(f"CRYPTOCOM_API_SECRET={api_secret_input}\n")
+                    f.write(f"TELEGRAM_BOT_TOKEN={tg_token_input}\n")
+                    f.write(f"TELEGRAM_CHAT_ID={tg_chat_id_input}\n")
+                    f.write(f"DASHBOARD_PASSWORD={dash_pass_input}\n")
+                # Also cache in DB configs
+                database.set_config("telegram_bot_token", tg_token_input)
+                database.set_config("telegram_chat_id", tg_chat_id_input)
+                database.set_config("dashboard_password", dash_pass_input)
+                st.success("Credentials and password saved successfully!")
+                st.toast("Settings saved!", icon="🔒")
+                import time
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error saving keys: {e}")
+                
+    with btn_col2:
+        if st.button("📲 Send Test Telegram Alert", use_container_width=True):
+            import telegram_notifier
+            test_success = telegram_notifier.send_telegram_message(
+                "⚡ <b>Antigravity Crypto Algo Trader</b>\n\n"
+                "✅ <i>Telegram bot connection successful!</i>\n"
+                "You will now receive live BUY/SELL alerts with order price, quantity, signal reason, and PnL.",
+                token=tg_token_input,
+                chat_id=tg_chat_id_input
+            )
+            if test_success:
+                st.success("✅ Test message delivered to your Telegram!")
+                st.toast("Telegram test delivered!", icon="🚀")
+            else:
+                st.error("❌ Failed to send Telegram message. Please check your Bot Token and Chat ID.")
 
 with tab_logs:
     st.markdown("### Engine Real-time Logs (`data/bot.log`)")
@@ -665,10 +884,8 @@ with tab_logs:
     else:
         st.markdown(f"<div style='color:{TEXT_MUTED}; font-style:italic;'>No bot logs found. The log file will be generated once the bot process starts.</div>", unsafe_allow_html=True)
 
-# Auto refresh dashboard logic
-import time
-# Add a refresh button or small auto-refresh check
-# This triggers a light check every 30 seconds
-# streamlit_autorefresh is not a default package, but standard streamlit sleep is a simple way
-if st.button("↻ Refresh Data"):
+# Auto-refresh background loop
+if st.session_state.get("auto_refresh", False):
+    import time
+    time.sleep(refresh_seconds)
     st.rerun()
